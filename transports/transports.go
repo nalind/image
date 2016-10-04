@@ -6,6 +6,7 @@ import (
 
 	"github.com/containers/image/directory"
 	"github.com/containers/image/docker"
+	"github.com/containers/image/explode"
 	ociLayout "github.com/containers/image/oci/layout"
 	"github.com/containers/image/openshift"
 	"github.com/containers/image/types"
@@ -21,6 +22,7 @@ func init() {
 		docker.Transport,
 		ociLayout.Transport,
 		openshift.Transport,
+		explode.Transport,
 	} {
 		name := t.Name()
 		if _, ok := KnownTransports[name]; ok {
