@@ -3,6 +3,7 @@ language: go
 sudo: required
 notifications:
   email: false
+  irc: false
 dist: trusty
 services:
   - docker
@@ -11,11 +12,15 @@ os:
 before_install:
  - sudo docker build -t image-test -f .travis.Dockerfile .
  - sudo chown -R $(id -u):$(id -g) $HOME/gopath
-
 env:
   - BUILDTAGS='btrfs_noversion libdm_no_deferred_remove'
   - BUILDTAGS='btrfs_noversion libdm_no_deferred_remove containers_image_openpgp'
-
+before_script:
+  - if test ${TRAVIS_REPO_SLUG} != containers/image; then
+      mkdir -p ${GOPATH}/src/github.com/containers/image/ ;
+      rsync -aHAX ${TRAVIS_BUILD_DIR}/ ${GOPATH}/src/github.com/containers/image/ ;
+      cd ${GOPATH}/src/github.com/containers/image/ ;
+    fi
 script: >
   sudo docker run --privileged -ti --rm --user $(id -u):$(id -g)
   -e TRAVIS=$TRAVIS -e TRAVIS_COMMIT_RANGE=$TRAVIS_COMMIT_RANGE

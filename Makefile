@@ -28,7 +28,7 @@ clean:
 	rm -rf vendor tools.timestamp
 
 test: vendor
-	@go test $(BUILDFLAGS) -cover $(PACKAGES)
+	go test $(BUILDFLAGS) -cover $(PACKAGES)
 
 # This is not run as part of (make all), but Travis CI does run this.
 # Demonstarting a working version of skopeo (possibly with modified SKOPEO_REPO/SKOPEO_BRANCH, e.g.
@@ -48,8 +48,8 @@ test-skopeo:
 		rm -rf $${skopeo_path}
 
 validate: lint
-	@go vet $(PACKAGES)
-	@test -z "$$(gofmt -s -l . | grep -ve '^vendor' | tee /dev/stderr)"
+	go vet $(PACKAGES)
+	test -z "$$(gofmt -s -l . | grep -ve '^vendor' | tee /dev/stderr)"
 
 lint:
 	@out="$$(golint $(PACKAGES))"; \
@@ -64,9 +64,9 @@ EPOCH_TEST_COMMIT ?= e68e0e1110e64f906f9b482e548f17d73e02e6b1
 
 # When this is running in travis, it will only check the travis commit range
 .gitvalidation:
-	@which git-validation > /dev/null 2>/dev/null || (echo "ERROR: git-validation not found. Consider 'make clean && make tools'" && false)
+	which git-validation > /dev/null 2>/dev/null || (echo "ERROR: git-validation not found. Consider 'make clean && make tools'" && false)
 ifeq ($(TRAVIS),true)
-	@git-validation -q -run DCO,short-subject,dangling-whitespace
+	git-validation --no-travis -D -v -run DCO,short-subject,dangling-whitespace -range $(EPOCH_TEST_COMMIT)..$(TRAVIS_COMMIT)
 else
-	@git-validation -q -run DCO,short-subject,dangling-whitespace -range $(EPOCH_TEST_COMMIT)..HEAD
+	git-validation --no-travis -D -v -run DCO,short-subject,dangling-whitespace -range $(EPOCH_TEST_COMMIT)..HEAD
 endif
