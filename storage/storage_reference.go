@@ -7,6 +7,7 @@ import (
 	"github.com/containers/image/docker/reference"
 	"github.com/containers/image/types"
 	"github.com/containers/storage"
+	digest "github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
 )
 
@@ -17,10 +18,12 @@ type storageReference struct {
 	transport storageTransport
 	reference string
 	id        string
-	name      reference.Named
+	name      reference.Reference
+	tag       string
+	digest    digest.Digest
 }
 
-func newReference(transport storageTransport, reference, id string, name reference.Named) *storageReference {
+func newReference(transport storageTransport, reference, id string, name reference.Reference, tag string, digest digest.Digest) *storageReference {
 	// We take a copy of the transport, which contains a pointer to the
 	// store that it used for resolving this reference, so that the
 	// transport that we'll return from Transport() won't be affected by
@@ -30,6 +33,8 @@ func newReference(transport storageTransport, reference, id string, name referen
 		reference: reference,
 		id:        id,
 		name:      name,
+		tag:       tag,
+		digest:    digest,
 	}
 }
 
@@ -76,9 +81,26 @@ func (s storageReference) Transport() types.ImageTransport {
 	}
 }
 
-// Return a name with a tag, if we have a name to base them on.
+// Return a name with a tag or digest, if we have either, else return it bare.
 func (s storageReference) DockerReference() reference.Named {
-	return s.name
+	if s.name == nil {
+		return nil
+	}
+	name, ok := s.name.(reference.Named)
+	if !ok {
+		return nil
+	}
+	if s.tag != "" {
+		if namedTagged, err := reference.WithTag(name, s.tag); err == nil {
+			return namedTagged
+		}
+	}
+	if s.digest != "" {
+		if canonical, err := reference.WithDigest(name, s.digest); err == nil {
+			return canonical
+		}
+	}
+	return name
 }
 
 // Return a name with a tag, prefixed with the graph root and driver name, to
@@ -91,7 +113,7 @@ func (s storageReference) StringWithinTransport() string {
 		optionsList = ":" + strings.Join(options, ",")
 	}
 	storeSpec := "[" + s.transport.store.GraphDriverName() + "@" + s.transport.store.GraphRoot() + "+" + s.transport.store.RunRoot() + optionsList + "]"
-	if s.name == nil {
+	if s.reference == "" {
 		return storeSpec + "@" + s.id
 	}
 	if s.id == "" {
@@ -120,14 +142,14 @@ func (s storageReference) PolicyConfigurationNamespaces() []string {
 	driverlessStoreSpec := "[" + s.transport.store.GraphRoot() + "]"
 	namespaces := []string{}
 	if s.name != nil {
-		if s.id != "" {
-			// The reference without the ID is also a valid namespace.
-			namespaces = append(namespaces, storeSpec+s.reference)
-		}
-		components := strings.Split(s.name.Name(), "/")
-		for len(components) > 0 {
-			namespaces = append(namespaces, storeSpec+strings.Join(components, "/"))
-			components = components[:len(components)-1]
+		name, ok := s.name.(reference.Named)
+		if ok {
+			name = reference.TrimNamed(name)
+			components := strings.Split(name.String(), "/")
+			for len(components) > 0 {
+				namespaces = append(namespaces, storeSpec+strings.Join(components, "/"))
+				components = components[:len(components)-1]
+			}
 		}
 	}
 	namespaces = append(namespaces, storeSpec)
