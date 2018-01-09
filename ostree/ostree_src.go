@@ -94,7 +94,7 @@ func (s *ostreeImageSource) getTarSplitData(blob string) ([]byte, error) {
 // It may use a remote (= slow) service.
 func (s *ostreeImageSource) GetManifest(instanceDigest *digest.Digest) ([]byte, string, error) {
 	if instanceDigest != nil {
-		return nil, "", errors.Errorf(`Manifest lists are not supported by "ostree:"`)
+		return nil, "", errors.New(`Manifest lists are not supported by "ostree:"`)
 	}
 	if s.repo == nil {
 		repo, err := openRepo(s.ref.repo)
@@ -262,7 +262,7 @@ func (s *ostreeImageSource) GetBlob(info types.BlobInfo) (io.ReadCloser, int64, 
 
 	// Ensure s.compressed is initialized.  It is build by LayerInfosForCopy.
 	if s.compressed == nil {
-		_, err := s.LayerInfosForCopy()
+		_, err := s.LayerInfosForCopy(nil)
 		if err != nil {
 			return nil, -1, err
 		}
@@ -331,7 +331,7 @@ func (s *ostreeImageSource) GetBlob(info types.BlobInfo) (io.ReadCloser, int64, 
 
 func (s *ostreeImageSource) GetSignatures(ctx context.Context, instanceDigest *digest.Digest) ([][]byte, error) {
 	if instanceDigest != nil {
-		return nil, errors.New("manifest lists are not supported by this transport")
+		return nil, errors.New(`Manifest lists are not supported by "ostree:"`)
 	}
 	lenSignatures, err := s.getLenSignatures()
 	if err != nil {
@@ -365,8 +365,13 @@ func (s *ostreeImageSource) GetSignatures(ctx context.Context, instanceDigest *d
 }
 
 // LayerInfosForCopy() returns the list of layer blobs that make up the root filesystem of
-// the image, after they've been decompressed.
-func (s *ostreeImageSource) LayerInfosForCopy() ([]types.BlobInfo, error) {
+// the image, after they've been decompressed.  They should be used when reading, in preference
+// to values in the manifest, if specified.
+func (s *ostreeImageSource) LayerInfosForCopy(instanceDigest *digest.Digest) ([]types.BlobInfo, error) {
+	if instanceDigest != nil {
+		return nil, errors.New(`Manifest lists are not supported by "ostree:"`)
+	}
+
 	updatedBlobInfos := []types.BlobInfo{}
 	manifestBlob, manifestType, err := s.GetManifest(nil)
 	if err != nil {
