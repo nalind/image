@@ -412,7 +412,10 @@ func (d *openshiftImageDestination) PutManifest(m []byte, instanceDigest *digest
 	if err != nil {
 		return err
 	}
-	d.imageStreamImageName = manifestDigest.String()
+
+	if instanceDigest == nil {
+		d.imageStreamImageName = manifestDigest.String()
+	}
 
 	return d.docker.PutManifest(m, instanceDigest)
 }
