@@ -35,7 +35,7 @@ func (noCache) RecordDigestUncompressedPair(anyDigest digest.Digest, uncompresse
 
 // RecordKnownLocation records that a blob with the specified digest exists within the specified (transport, scope) scope,
 // and can be reused given the opaque location data.
-func (noCache) RecordKnownLocation(transport types.ImageTransport, scope types.BICTransportScope, blobDigest digest.Digest, location types.BICLocationReference) {
+func (noCache) RecordKnownLocation(transport types.ImageTransport, scope types.BICTransportScope, blobDigest digest.Digest, mediaType string, location types.BICLocationReference) {
 }
 
 // CandidateLocations returns a prioritized, limited, number of blobs and their locations that could possibly be reused

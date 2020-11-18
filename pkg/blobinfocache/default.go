@@ -15,7 +15,7 @@ import (
 const (
 	// blobInfoCacheFilename is the file name used for blob info caches.
 	// If the format changes in an incompatible way, increase the version number.
-	blobInfoCacheFilename = "blob-info-cache-v1.boltdb"
+	blobInfoCacheFilename = "blob-info-cache-v2.boltdb"
 	// systemBlobInfoCacheDir is the directory containing the blob info cache (in blobInfocacheFilename) for root-running processes.
 	systemBlobInfoCacheDir = "/var/lib/containers/cache"
 )

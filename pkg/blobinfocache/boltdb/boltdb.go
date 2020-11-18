@@ -2,6 +2,7 @@
 package boltdb
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"sync"
@@ -222,7 +223,7 @@ func (bdc *cache) RecordDigestUncompressedPair(anyDigest digest.Digest, uncompre
 
 // RecordKnownLocation records that a blob with the specified digest exists within the specified (transport, scope) scope,
 // and can be reused given the opaque location data.
-func (bdc *cache) RecordKnownLocation(transport types.ImageTransport, scope types.BICTransportScope, blobDigest digest.Digest, location types.BICLocationReference) {
+func (bdc *cache) RecordKnownLocation(transport types.ImageTransport, scope types.BICTransportScope, blobDigest digest.Digest, mediaType string, location types.BICLocationReference) {
 	_ = bdc.update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists(knownLocationsBucket)
 		if err != nil {
@@ -244,7 +245,7 @@ func (bdc *cache) RecordKnownLocation(transport types.ImageTransport, scope type
 		if err != nil {
 			return err
 		}
-		if err := b.Put([]byte(location.Opaque), value); err != nil { // Possibly overwriting an older entry.
+		if err := b.Put([]byte(location.Opaque), append(append([]byte(mediaType), 0), value...)); err != nil { // Possibly overwriting an older entry.
 			return err
 		}
 		return nil
@@ -258,14 +259,19 @@ func (bdc *cache) appendReplacementCandidates(candidates []prioritize.CandidateW
 		return candidates
 	}
 	_ = b.ForEach(func(k, v []byte) error {
+		b := bytes.SplitN(v, []byte{0}, 2)
+		if len(b) != 2 {
+			return nil
+		}
 		t := time.Time{}
-		if err := t.UnmarshalBinary(v); err != nil {
+		if err := t.UnmarshalBinary(b[1]); err != nil {
 			return err
 		}
 		candidates = append(candidates, prioritize.CandidateWithTime{
 			Candidate: types.BICReplacementCandidate{
-				Digest:   digest,
-				Location: types.BICLocationReference{Opaque: string(k)},
+				Digest:    digest,
+				MediaType: string(b[0]),
+				Location:  types.BICLocationReference{Opaque: string(k)},
 			},
 			LastSeen: t,
 		})

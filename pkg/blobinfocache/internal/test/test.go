@@ -16,6 +16,10 @@ const (
 	digestCompressedA         = digest.Digest("sha256:3333333333333333333333333333333333333333333333333333333333333333")
 	digestCompressedB         = digest.Digest("sha256:4444444444444444444444444444444444444444444444444444444444444444")
 	digestCompressedUnrelated = digest.Digest("sha256:5555555555555555555555555555555555555555555555555555555555555555")
+	mediaTypeU                = "mediaType/U"
+	mediaTypeA                = "mediaType/A"
+	mediaTypeB                = "mediaType/B"
+	mediaTypeCU               = "mediaType/CU"
 )
 
 // GenericCache runs an implementation-independent set of tests, given a
@@ -78,11 +82,11 @@ func testGenericRecordKnownLocations(t *testing.T, cache types.BlobInfoCache) {
 			for _, digest := range []digest.Digest{digestCompressedA, digestCompressedB} { // Two different digests should not affect each other either.
 				lr1 := types.BICLocationReference{Opaque: scopeName + "1"}
 				lr2 := types.BICLocationReference{Opaque: scopeName + "2"}
-				cache.RecordKnownLocation(transport, scope, digest, lr2)
-				cache.RecordKnownLocation(transport, scope, digest, lr1)
+				cache.RecordKnownLocation(transport, scope, digest, "type2", lr2)
+				cache.RecordKnownLocation(transport, scope, digest, "type1", lr1)
 				assert.Equal(t, []types.BICReplacementCandidate{
-					{Digest: digest, Location: lr1},
-					{Digest: digest, Location: lr2},
+					{Digest: digest, MediaType: "type1", Location: lr1},
+					{Digest: digest, MediaType: "type2", Location: lr2},
 				}, cache.CandidateLocations(transport, scope, digest, false))
 			}
 		}
@@ -92,13 +96,14 @@ func testGenericRecordKnownLocations(t *testing.T, cache types.BlobInfoCache) {
 // candidate is a shorthand for types.BICReplacementCandiddate
 type candidate struct {
 	d  digest.Digest
+	mt string
 	lr string
 }
 
 func assertCandidatesMatch(t *testing.T, scopeName string, expected []candidate, actual []types.BICReplacementCandidate) {
 	e := make([]types.BICReplacementCandidate, len(expected))
 	for i, ev := range expected {
-		e[i] = types.BICReplacementCandidate{Digest: ev.d, Location: types.BICLocationReference{Opaque: scopeName + ev.lr}}
+		e[i] = types.BICReplacementCandidate{Digest: ev.d, MediaType: ev.mt, Location: types.BICLocationReference{Opaque: scopeName + ev.lr}}
 	}
 	assert.Equal(t, e, actual)
 }
@@ -111,11 +116,12 @@ func testGenericCandidateLocations(t *testing.T, cache types.BlobInfoCache) {
 	digestNameSet := []struct {
 		n string
 		d digest.Digest
+		m string
 	}{
-		{"U", digestUncompressed},
-		{"A", digestCompressedA},
-		{"B", digestCompressedB},
-		{"CU", digestCompressedUnrelated},
+		{"U", digestUncompressed, mediaTypeU},
+		{"A", digestCompressedA, mediaTypeA},
+		{"B", digestCompressedB, mediaTypeB},
+		{"CU", digestCompressedUnrelated, mediaTypeCU},
 	}
 
 	for _, scopeName := range []string{"A", "B"} { // Run the test in two different scopes to verify they don't affect each other.
@@ -127,42 +133,42 @@ func testGenericCandidateLocations(t *testing.T, cache types.BlobInfoCache) {
 		// Record "2" entries before "1" entries; then results should sort "1" (more recent) before "2" (older)
 		for _, suffix := range []string{"2", "1"} {
 			for _, e := range digestNameSet {
-				cache.RecordKnownLocation(transport, scope, e.d, types.BICLocationReference{Opaque: scopeName + e.n + suffix})
+				cache.RecordKnownLocation(transport, scope, e.d, e.m, types.BICLocationReference{Opaque: scopeName + e.n + suffix})
 			}
 		}
 
 		// No substitutions allowed:
 		for _, e := range digestNameSet {
 			assertCandidatesMatch(t, scopeName, []candidate{
-				{d: e.d, lr: e.n + "1"}, {d: e.d, lr: e.n + "2"},
+				{d: e.d, mt: e.m, lr: e.n + "1"}, {d: e.d, mt: e.m, lr: e.n + "2"},
 			}, cache.CandidateLocations(transport, scope, e.d, false))
 		}
 
 		// With substitutions: The original digest is always preferred, then other compressed, then the uncompressed one.
 		assertCandidatesMatch(t, scopeName, []candidate{
-			{d: digestCompressedA, lr: "A1"}, {d: digestCompressedA, lr: "A2"},
-			{d: digestCompressedB, lr: "B1"}, {d: digestCompressedB, lr: "B2"},
-			{d: digestUncompressed, lr: "U1"}, // Beyond the replacementAttempts limit: {d: digestUncompressed, lr: "U2"},
+			{d: digestCompressedA, mt: mediaTypeA, lr: "A1"}, {d: digestCompressedA, mt: mediaTypeA, lr: "A2"},
+			{d: digestCompressedB, mt: mediaTypeB, lr: "B1"}, {d: digestCompressedB, mt: mediaTypeB, lr: "B2"},
+			{d: digestUncompressed, mt: mediaTypeU, lr: "U1"}, // Beyond the replacementAttempts limit: {d: digestUncompressed, mt: mediaTypeCU, lr: "U2"},
 		}, cache.CandidateLocations(transport, scope, digestCompressedA, true))
 
 		assertCandidatesMatch(t, scopeName, []candidate{
-			{d: digestCompressedB, lr: "B1"}, {d: digestCompressedB, lr: "B2"},
-			{d: digestCompressedA, lr: "A1"}, {d: digestCompressedA, lr: "A2"},
-			{d: digestUncompressed, lr: "U1"}, // Beyond the replacementAttempts limit: {d: digestUncompressed, lr: "U2"},
+			{d: digestCompressedB, mt: mediaTypeB, lr: "B1"}, {d: digestCompressedB, mt: mediaTypeB, lr: "B2"},
+			{d: digestCompressedA, mt: mediaTypeA, lr: "A1"}, {d: digestCompressedA, mt: mediaTypeA, lr: "A2"},
+			{d: digestUncompressed, mt: mediaTypeU, lr: "U1"}, // Beyond the replacementAttempts limit: {d: digestUncompressed, lr: "U2"},
 		}, cache.CandidateLocations(transport, scope, digestCompressedB, true))
 
 		assertCandidatesMatch(t, scopeName, []candidate{
-			{d: digestUncompressed, lr: "U1"}, {d: digestUncompressed, lr: "U2"},
+			{d: digestUncompressed, mt: mediaTypeU, lr: "U1"}, {d: digestUncompressed, mt: mediaTypeU, lr: "U2"},
 			// "1" entries were added after "2", and A/Bs are sorted in the reverse of digestNameSet order
-			{d: digestCompressedB, lr: "B1"},
-			{d: digestCompressedA, lr: "A1"},
-			{d: digestCompressedB, lr: "B2"},
+			{d: digestCompressedB, mt: mediaTypeB, lr: "B1"},
+			{d: digestCompressedA, mt: mediaTypeA, lr: "A1"},
+			{d: digestCompressedB, mt: mediaTypeB, lr: "B2"},
 			// Beyond the replacementAttempts limit: {d: digestCompressedA, lr: "A2"},
 		}, cache.CandidateLocations(transport, scope, digestUncompressed, true))
 
 		// Locations are known, but no relationships
 		assertCandidatesMatch(t, scopeName, []candidate{
-			{d: digestCompressedUnrelated, lr: "CU1"}, {d: digestCompressedUnrelated, lr: "CU2"},
+			{d: digestCompressedUnrelated, mt: mediaTypeCU, lr: "CU1"}, {d: digestCompressedUnrelated, mt: mediaTypeCU, lr: "CU2"},
 		}, cache.CandidateLocations(transport, scope, digestCompressedUnrelated, true))
 
 	}

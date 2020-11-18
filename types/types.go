@@ -166,8 +166,9 @@ type BICLocationReference struct {
 
 // BICReplacementCandidate is an item returned by BlobInfoCache.CandidateLocations.
 type BICReplacementCandidate struct {
-	Digest   digest.Digest
-	Location BICLocationReference
+	Digest    digest.Digest
+	MediaType string
+	Location  BICLocationReference
 }
 
 // BlobInfoCache records data useful for reusing blobs, or substituting equivalent ones, to avoid unnecessary blob copies.
@@ -208,7 +209,7 @@ type BlobInfoCache interface {
 
 	// RecordKnownLocation records that a blob with the specified digest exists within the specified (transport, scope) scope,
 	// and can be reused given the opaque location data.
-	RecordKnownLocation(transport ImageTransport, scope BICTransportScope, digest digest.Digest, location BICLocationReference)
+	RecordKnownLocation(transport ImageTransport, scope BICTransportScope, digest digest.Digest, mediaType string, location BICLocationReference)
 	// CandidateLocations returns a prioritized, limited, number of blobs and their locations that could possibly be reused
 	// within the specified (transport scope) (if they still exist, which is not guaranteed).
 	//

@@ -18,13 +18,18 @@ type locationKey struct {
 	blobDigest digest.Digest
 }
 
+type knownLocationInfo struct {
+	when      time.Time
+	mediaType string
+}
+
 // cache implements an in-memory-only BlobInfoCache
 type cache struct {
 	mutex sync.Mutex
 	// The following fields can only be accessed with mutex held.
 	uncompressedDigests   map[digest.Digest]digest.Digest
-	digestsByUncompressed map[digest.Digest]map[digest.Digest]struct{}             // stores a set of digests for each uncompressed digest
-	knownLocations        map[locationKey]map[types.BICLocationReference]time.Time // stores last known existence time for each location reference
+	digestsByUncompressed map[digest.Digest]map[digest.Digest]struct{}                     // stores a set of digests and media types for each uncompressed digest
+	knownLocations        map[locationKey]map[types.BICLocationReference]knownLocationInfo // stores last known existence time for each location reference
 }
 
 // New returns a BlobInfoCache implementation which is in-memory only.
@@ -39,7 +44,7 @@ func New() types.BlobInfoCache {
 	return &cache{
 		uncompressedDigests:   map[digest.Digest]digest.Digest{},
 		digestsByUncompressed: map[digest.Digest]map[digest.Digest]struct{}{},
-		knownLocations:        map[locationKey]map[types.BICLocationReference]time.Time{},
+		knownLocations:        map[locationKey]map[types.BICLocationReference]knownLocationInfo{},
 	}
 }
 
@@ -89,16 +94,16 @@ func (mem *cache) RecordDigestUncompressedPair(anyDigest digest.Digest, uncompre
 
 // RecordKnownLocation records that a blob with the specified digest exists within the specified (transport, scope) scope,
 // and can be reused given the opaque location data.
-func (mem *cache) RecordKnownLocation(transport types.ImageTransport, scope types.BICTransportScope, blobDigest digest.Digest, location types.BICLocationReference) {
+func (mem *cache) RecordKnownLocation(transport types.ImageTransport, scope types.BICTransportScope, blobDigest digest.Digest, mediaType string, location types.BICLocationReference) {
 	mem.mutex.Lock()
 	defer mem.mutex.Unlock()
 	key := locationKey{transport: transport.Name(), scope: scope, blobDigest: blobDigest}
 	locationScope, ok := mem.knownLocations[key]
 	if !ok {
-		locationScope = map[types.BICLocationReference]time.Time{}
+		locationScope = map[types.BICLocationReference]knownLocationInfo{}
 		mem.knownLocations[key] = locationScope
 	}
-	locationScope[location] = time.Now() // Possibly overwriting an older entry.
+	locationScope[location] = knownLocationInfo{when: time.Now(), mediaType: mediaType} // Possibly overwriting an older entry.
 }
 
 // appendReplacementCandiates creates prioritize.CandidateWithTime values for (transport, scope, digest), and returns the result of appending them to candidates.
@@ -107,10 +112,11 @@ func (mem *cache) appendReplacementCandidates(candidates []prioritize.CandidateW
 	for l, t := range locations {
 		candidates = append(candidates, prioritize.CandidateWithTime{
 			Candidate: types.BICReplacementCandidate{
-				Digest:   digest,
-				Location: l,
+				Digest:    digest,
+				MediaType: t.mediaType,
+				Location:  l,
 			},
-			LastSeen: t,
+			LastSeen: t.when,
 		})
 	}
 	return candidates

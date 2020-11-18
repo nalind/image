@@ -204,8 +204,8 @@ func (d *dockerImageDestination) PutBlob(ctx context.Context, stream io.Reader, 
 	}
 
 	logrus.Debugf("Upload of layer %s complete", computedDigest)
-	cache.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), computedDigest, newBICLocationReference(d.ref))
-	return types.BlobInfo{Digest: computedDigest, Size: sizeCounter.size}, nil
+	cache.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), computedDigest, inputInfo.MediaType, newBICLocationReference(d.ref))
+	return types.BlobInfo{Digest: computedDigest, MediaType: inputInfo.MediaType, Size: sizeCounter.size}, nil
 }
 
 // blobExists returns true iff repo contains a blob with digest, and if so, also its size.
@@ -298,8 +298,8 @@ func (d *dockerImageDestination) TryReusingBlob(ctx context.Context, info types.
 		return false, types.BlobInfo{}, err
 	}
 	if exists {
-		cache.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), info.Digest, newBICLocationReference(d.ref))
-		return true, types.BlobInfo{Digest: info.Digest, Size: size}, nil
+		cache.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), info.Digest, info.MediaType, newBICLocationReference(d.ref))
+		return true, types.BlobInfo{Digest: info.Digest, MediaType: info.MediaType, Size: size}, nil
 	}
 
 	// Then try reusing blobs from other locations.
@@ -309,7 +309,7 @@ func (d *dockerImageDestination) TryReusingBlob(ctx context.Context, info types.
 			logrus.Debugf("Error parsing BlobInfoCache location reference: %s", err)
 			continue
 		}
-		logrus.Debugf("Trying to reuse cached location %s in %s", candidate.Digest.String(), candidateRepo.Name())
+		logrus.Debugf("Trying to reuse cached location %s of type %s in %s", candidate.Digest.String(), candidate.MediaType, candidateRepo.Name())
 
 		// Sanity checks:
 		if reference.Domain(candidateRepo) != reference.Domain(d.ref.ref) {
@@ -351,8 +351,8 @@ func (d *dockerImageDestination) TryReusingBlob(ctx context.Context, info types.
 				continue
 			}
 		}
-		cache.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), candidate.Digest, newBICLocationReference(d.ref))
-		return true, types.BlobInfo{Digest: candidate.Digest, Size: size}, nil
+		cache.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), candidate.Digest, candidate.MediaType, newBICLocationReference(d.ref))
+		return true, types.BlobInfo{Digest: candidate.Digest, MediaType: candidate.MediaType, Size: size}, nil
 	}
 
 	return false, types.BlobInfo{}, nil
