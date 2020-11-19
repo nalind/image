@@ -951,7 +951,7 @@ func (ic *imageCopier) copyUpdatedConfigAndManifest(ctx context.Context, instanc
 		instanceDigest = &manifestDigest
 	}
 	if err := ic.c.dest.PutManifest(ctx, man, instanceDigest); err != nil {
-		return nil, "", errors.Wrap(err, "Error writing manifest")
+		return nil, "", errors.Wrapf(err, "Error writing manifest %q", string(man))
 	}
 	return man, manifestDigest, nil
 }
@@ -1074,6 +1074,7 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 					Artifact: srcInfo,
 				}
 			}
+			logrus.Debugf("reused blob %q with type %q", blobInfo.Digest.String(), blobInfo.MediaType)
 			return blobInfo, cachedDiffID, nil
 		}
 	}
@@ -1187,6 +1188,61 @@ func (r errorAnnotationReader) Read(b []byte) (n int, err error) {
 		return n, errors.Wrapf(err, "error happened during read")
 	}
 	return n, err
+}
+
+func mapLayerMediaType(blobDigest string, mediaType string, compressionOperation types.LayerCompression, compressionFormat compression.Algorithm) string {
+	dockerForeignLayerByCompression := map[string]string{
+		"":                      manifest.DockerV2Schema2ForeignLayerMediaType,
+		compression.Gzip.Name(): manifest.DockerV2Schema2ForeignLayerMediaTypeGzip,
+	}
+	dockerLayerByCompression := map[string]string{
+		"":                      manifest.DockerV2SchemaLayerMediaTypeUncompressed,
+		compression.Gzip.Name(): manifest.DockerV2Schema2LayerMediaType,
+	}
+	ociNonDistributableLayerByCompression := map[string]string{
+		"":                      imgspecv1.MediaTypeImageLayerNonDistributable,
+		compression.Gzip.Name(): imgspecv1.MediaTypeImageLayerNonDistributableGzip,
+		compression.Zstd.Name(): imgspecv1.MediaTypeImageLayerNonDistributableZstd,
+	}
+	ociLayerByCompression := map[string]string{
+		"":                      imgspecv1.MediaTypeImageLayer,
+		compression.Gzip.Name(): imgspecv1.MediaTypeImageLayerGzip,
+		compression.Zstd.Name(): imgspecv1.MediaTypeImageLayerZstd,
+	}
+	type compressionMapAndType struct {
+		mediaTypeMap        map[string]string
+		compressionTypeName string
+	}
+	compressionMapAndTypeByType := map[string]compressionMapAndType{
+		manifest.DockerV2Schema2ForeignLayerMediaType:     {dockerForeignLayerByCompression, ""},
+		manifest.DockerV2Schema2ForeignLayerMediaTypeGzip: {dockerForeignLayerByCompression, compression.Gzip.Name()},
+
+		manifest.DockerV2SchemaLayerMediaTypeUncompressed: {dockerLayerByCompression, ""},
+		manifest.DockerV2Schema2LayerMediaType:            {dockerLayerByCompression, compression.Gzip.Name()},
+
+		imgspecv1.MediaTypeImageLayerNonDistributable:     {ociNonDistributableLayerByCompression, ""},
+		imgspecv1.MediaTypeImageLayerNonDistributableGzip: {ociNonDistributableLayerByCompression, compression.Gzip.Name()},
+		imgspecv1.MediaTypeImageLayerNonDistributableZstd: {ociNonDistributableLayerByCompression, compression.Zstd.Name()},
+
+		imgspecv1.MediaTypeImageLayer:     {ociLayerByCompression, ""},
+		imgspecv1.MediaTypeImageLayerGzip: {ociLayerByCompression, compression.Gzip.Name()},
+		imgspecv1.MediaTypeImageLayerZstd: {ociLayerByCompression, compression.Zstd.Name()},
+	}
+	if compressionMapAndType, ok := compressionMapAndTypeByType[mediaType]; ok {
+		var compressionFormatName string
+		switch compressionOperation {
+		case types.Decompress:
+			compressionFormatName = ""
+		case types.Compress:
+			compressionFormatName = compressionFormat.Name()
+		case types.PreserveOriginal:
+			compressionFormatName = compressionMapAndType.compressionTypeName
+		}
+		if typeByCompression, ok := compressionMapAndType.mediaTypeMap[compressionFormatName]; ok {
+			return typeByCompression
+		}
+	}
+	return mediaType
 }
 
 // copyBlobFromStream copies a blob with srcInfo (with known Digest and Annotations and possibly known Size) from srcStream to dest,
@@ -1347,6 +1403,10 @@ func (c *copier) copyBlobFromStream(ctx context.Context, srcStream io.Reader, sr
 			inputInfo.Size = -1
 			encrypted = true
 		}
+	}
+
+	if inputInfo.MediaType == "" && srcInfo.MediaType != "" {
+		inputInfo.MediaType = mapLayerMediaType(srcInfo.Digest.String(), srcInfo.MediaType, compressionOperation, desiredCompressionFormat)
 	}
 
 	// === Report progress using the c.progress channel, if required.
