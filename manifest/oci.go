@@ -122,6 +122,17 @@ func (m *OCI1) UpdateLayerInfos(layerInfos []types.BlobInfo) error {
 				return fmt.Errorf("error preparing updated manifest: decryption specified but original mediatype is not encrypted: %q", mimeType)
 			}
 			mimeType = decMimeType
+		} else if info.CryptoOperation == types.PreserveOriginalCrypto && info.MediaType != "" {
+			layerTypeAlias := map[string]string{
+				DockerV2Schema2ForeignLayerMediaType:     imgspecv1.MediaTypeImageLayerNonDistributable,
+				DockerV2Schema2ForeignLayerMediaTypeGzip: imgspecv1.MediaTypeImageLayerNonDistributableGzip,
+				DockerV2SchemaLayerMediaTypeUncompressed: imgspecv1.MediaTypeImageLayer,
+				DockerV2Schema2LayerMediaType:            imgspecv1.MediaTypeImageLayerGzip,
+			}
+			mimeType = info.MediaType
+			if mt, ok := layerTypeAlias[mimeType]; ok {
+				mimeType = mt
+			}
 		}
 		mimeType, err := updatedMIMEType(oci1CompressionMIMETypeSets, mimeType, info)
 		if err != nil {

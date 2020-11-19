@@ -9,6 +9,7 @@ import (
 	"github.com/containers/image/v5/pkg/strslice"
 	"github.com/containers/image/v5/types"
 	"github.com/opencontainers/go-digest"
+	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 )
 
@@ -234,6 +235,18 @@ func (m *Schema2) UpdateLayerInfos(layerInfos []types.BlobInfo) error {
 	m.LayersDescriptors = make([]Schema2Descriptor, len(layerInfos))
 	for i, info := range layerInfos {
 		mimeType := original[i].MediaType
+		if info.MediaType != "" {
+			layerTypeAlias := map[string]string{
+				imgspecv1.MediaTypeImageLayerNonDistributable:     DockerV2Schema2ForeignLayerMediaType,
+				imgspecv1.MediaTypeImageLayerNonDistributableGzip: DockerV2Schema2ForeignLayerMediaTypeGzip,
+				imgspecv1.MediaTypeImageLayer:                     DockerV2SchemaLayerMediaTypeUncompressed,
+				imgspecv1.MediaTypeImageLayerGzip:                 DockerV2Schema2LayerMediaType,
+			}
+			mimeType = info.MediaType
+			if mt, ok := layerTypeAlias[mimeType]; ok {
+				mimeType = mt
+			}
+		}
 		// First make sure we support the media type of the original layer.
 		if err := SupportedSchema2MediaType(mimeType); err != nil {
 			return fmt.Errorf("Error preparing updated manifest: unknown media type of original layer %q: %q", info.Digest, mimeType)
