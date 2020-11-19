@@ -248,6 +248,7 @@ func (bdc *cache) RecordKnownLocation(transport types.ImageTransport, scope type
 		if err := b.Put([]byte(location.Opaque), append(append([]byte(mediaType), 0), value...)); err != nil { // Possibly overwriting an older entry.
 			return err
 		}
+		logrus.Errorf("recorded %s as having type %q", blobDigest.String(), mediaType)
 		return nil
 	}) // FIXME? Log error (but throttle the log volume on repeated accesses)?
 }
@@ -275,6 +276,7 @@ func (bdc *cache) appendReplacementCandidates(candidates []prioritize.CandidateW
 			},
 			LastSeen: t,
 		})
+		logrus.Errorf("suggested %s with type %q", digest.String(), string(b[0]))
 		return nil
 	}) // FIXME? Log error (but throttle the log volume on repeated accesses)?
 	return candidates
