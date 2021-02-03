@@ -25,6 +25,10 @@ type v1OnlyBlobInfoCache struct {
 func (bic *v1OnlyBlobInfoCache) RecordDigestCompressorName(anyDigest digest.Digest, compressorName string) {
 }
 
+func (bic *v1OnlyBlobInfoCache) DigestCompressorName(anyDigest digest.Digest) string {
+	return UnknownCompression
+}
+
 func (bic *v1OnlyBlobInfoCache) CandidateLocations2(transport types.ImageTransport, scope types.BICTransportScope, digest digest.Digest, canSubstitute bool) []BICReplacementCandidate2 {
 	return nil
 }

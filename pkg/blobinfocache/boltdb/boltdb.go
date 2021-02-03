@@ -251,6 +251,27 @@ func (bdc *cache) RecordDigestCompressorName(anyDigest digest.Digest, compressor
 	}) // FIXME? Log error (but throttle the log volume on repeated accesses)?
 }
 
+// DigestCompressorName returns the type of compression that we know is applied to the
+// blob with the specified digest, or Uncompressed or UnknownCompression, regardless of
+// where we last saw a blob with that digest.
+func (bdc *cache) DigestCompressorName(anyDigest digest.Digest) string {
+	compressorName := blobinfocache.UnknownCompression
+	if err := bdc.view(func(tx *bolt.Tx) error {
+		compressionBucket := tx.Bucket(digestCompressorBucket)
+		if compressionBucket == nil {
+			return nil
+		}
+		digestKey := []byte(anyDigest.String())
+		if compressorNameValue := compressionBucket.Get(digestKey); len(compressorNameValue) > 0 {
+			compressorName = string(compressorNameValue)
+		}
+		return nil
+	}); err != nil { // Including os.IsNotExist(err)
+		return blobinfocache.UnknownCompression // FIXME? Log err (but throttle the log volume on repeated accesses)?
+	}
+	return compressorName
+}
+
 // RecordKnownLocation records that a blob with the specified digest exists within the specified (transport, scope) scope,
 // and can be reused given the opaque location data.
 func (bdc *cache) RecordKnownLocation(transport types.ImageTransport, scope types.BICTransportScope, blobDigest digest.Digest, location types.BICLocationReference) {

@@ -292,21 +292,31 @@ func (d *dockerImageDestination) mountBlob(ctx context.Context, srcRepo referenc
 // May use and/or update cache.
 func (d *dockerImageDestination) TryReusingBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache, canSubstitute bool) (bool, types.BlobInfo, error) {
 	if info.Digest == "" {
-		return false, types.BlobInfo{}, errors.Errorf(`"Can not check for a blob with unknown digest`)
+		return false, types.BlobInfo{}, errors.Errorf(`Can not check for a blob with unknown digest`)
 	}
 
-	// First, check whether the blob happens to already exist at the destination.
+	// First, check if we know how this blob was compressed.
+	bic := blobinfocache.FromBlobInfoCache(cache)
+	compressor := bic.DigestCompressorName(info.Digest)
+	if compressor == blobinfocache.UnknownCompression {
+		return false, types.BlobInfo{}, nil
+	}
+
+	// Then check whether the blob happens to already exist at the destination.
 	exists, size, err := d.blobExists(ctx, d.ref.ref, info.Digest, nil)
 	if err != nil {
 		return false, types.BlobInfo{}, err
 	}
 	if exists {
+		compressionOperation, compressionAlgorithm, err := blobinfocache.OperationAndAlgorithmForCompressor(compressor)
+		if err != nil {
+			return false, types.BlobInfo{}, err
+		}
 		cache.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), info.Digest, newBICLocationReference(d.ref))
-		return true, types.BlobInfo{Digest: info.Digest, MediaType: info.MediaType, Size: size}, nil
+		return true, types.BlobInfo{Digest: info.Digest, MediaType: info.MediaType, Size: size, CompressionOperation: compressionOperation, CompressionAlgorithm: compressionAlgorithm}, nil
 	}
 
 	// Then try reusing blobs from other locations.
-	bic := blobinfocache.FromBlobInfoCache(cache)
 	candidates := bic.CandidateLocations2(d.ref.Transport(), bicTransportScope(d.ref), info.Digest, canSubstitute)
 	for _, candidate := range candidates {
 		candidateRepo, err := parseBICLocationReference(candidate.Location)
