@@ -1087,6 +1087,18 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 			return types.BlobInfo{}, "", errors.Wrapf(err, "Error trying to reuse blob %s at destination", srcInfo.Digest)
 		}
 		if reused {
+			// Update the BlobInfo with information about how the reused blob is compressed.
+			compressorName := ic.c.blobInfoCache.DigestCompressorName(blobInfo.Digest)
+			if compressorName == internalblobinfocache.UnknownCompression {
+				return types.BlobInfo{}, "", errors.Errorf("Tried to reuse blob %s with unknown compression", blobInfo.Digest)
+			}
+			compressionOperation, compressionAlgorithm, err := internalblobinfocache.OperationAndAlgorithmForCompressor(compressorName)
+			if err != nil {
+				return types.BlobInfo{}, "", errors.Wrapf(err, "Error determining type of compression for reused blob with digest %s", blobInfo.Digest)
+			}
+			blobInfo.CompressionOperation = compressionOperation
+			blobInfo.CompressionAlgorithm = compressionAlgorithm
+
 			logrus.Debugf("Skipping blob %s (already present):", srcInfo.Digest)
 			bar := ic.c.createProgressBar(pool, srcInfo, "blob", "skipped: already exists")
 			bar.SetTotal(0, true)
@@ -1129,6 +1141,7 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 			// This is safe because we have just computed diffIDResult.Digest ourselves, and in the process
 			// we have read all of the input blob, so srcInfo.Digest must have been validated by digestingReader.
 			ic.c.blobInfoCache.RecordDigestUncompressedPair(srcInfo.Digest, diffIDResult.digest)
+			ic.c.blobInfoCache.RecordDigestCompressorName(diffIDResult.digest, internalblobinfocache.Uncompressed)
 			diffID = diffIDResult.digest
 		}
 	}
@@ -1354,7 +1367,11 @@ func (c *copier) copyBlobFromStream(ctx context.Context, srcStream io.Reader, sr
 		compressionOperation = types.PreserveOriginal
 		inputInfo = srcInfo
 		uploadCompressorName = srcCompressorName
-		uploadCompressionFormat = nil
+		if isCompressed {
+			uploadCompressionFormat = &compressionFormat
+		} else {
+			uploadCompressionFormat = nil
+		}
 	}
 
 	// === Encrypt the stream for valid mediatypes if ociEncryptConfig provided

@@ -295,18 +295,22 @@ func (d *dockerImageDestination) TryReusingBlob(ctx context.Context, info types.
 		return false, types.BlobInfo{}, errors.Errorf(`"Can not check for a blob with unknown digest`)
 	}
 
-	// First, check whether the blob happens to already exist at the destination.
-	exists, size, err := d.blobExists(ctx, d.ref.ref, info.Digest, nil)
-	if err != nil {
-		return false, types.BlobInfo{}, err
-	}
-	if exists {
-		cache.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), info.Digest, newBICLocationReference(d.ref))
-		return true, types.BlobInfo{Digest: info.Digest, MediaType: info.MediaType, Size: size}, nil
+	// First, if we know how it'd be compressed check whether the blob happens to already exist
+	// at the destination.  If we don't know, we want to fall back to trying known locations
+	// with known compression types.
+	bic := blobinfocache.FromBlobInfoCache(cache)
+	if compressorName := bic.DigestCompressorName(info.Digest); compressorName != blobinfocache.UnknownCompression {
+		exists, size, err := d.blobExists(ctx, d.ref.ref, info.Digest, nil)
+		if err != nil {
+			return false, types.BlobInfo{}, err
+		}
+		if exists {
+			cache.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), info.Digest, newBICLocationReference(d.ref))
+			return true, types.BlobInfo{Digest: info.Digest, MediaType: info.MediaType, Size: size}, nil
+		}
 	}
 
 	// Then try reusing blobs from other locations.
-	bic := blobinfocache.FromBlobInfoCache(cache)
 	candidates := bic.CandidateLocations2(d.ref.Transport(), bicTransportScope(d.ref), info.Digest, canSubstitute)
 	for _, candidate := range candidates {
 		candidateRepo, err := parseBICLocationReference(candidate.Location)
@@ -363,13 +367,7 @@ func (d *dockerImageDestination) TryReusingBlob(ctx context.Context, info types.
 
 		bic.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), candidate.Digest, newBICLocationReference(d.ref))
 
-		compressionOperation, compressionAlgorithm, err := blobinfocache.OperationAndAlgorithmForCompressor(candidate.CompressorName)
-		if err != nil {
-			logrus.Debugf("... Failed: %v", err)
-			continue
-		}
-
-		return true, types.BlobInfo{Digest: candidate.Digest, MediaType: info.MediaType, Size: size, CompressionOperation: compressionOperation, CompressionAlgorithm: compressionAlgorithm}, nil
+		return true, types.BlobInfo{Digest: candidate.Digest, MediaType: info.MediaType, Size: size}, nil
 	}
 
 	return false, types.BlobInfo{}, nil

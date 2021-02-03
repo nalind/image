@@ -120,6 +120,17 @@ func (mem *cache) RecordDigestCompressorName(blobDigest digest.Digest, compresso
 	mem.compressors[blobDigest] = compressorName
 }
 
+// DigestCompressorName returns the type of compression that we know is applied to the
+// blob with the specified digest, or Uncompressed or UnknownCompression.
+func (mem *cache) DigestCompressorName(blobDigest digest.Digest) string {
+	mem.mutex.Lock()
+	defer mem.mutex.Unlock()
+	if compressorName, ok := mem.compressors[blobDigest]; ok {
+		return compressorName
+	}
+	return blobinfocache.UnknownCompression
+}
+
 // appendReplacementCandiates creates prioritize.CandidateWithTime values for (transport, scope, digest), and returns the result of appending them to candidates.
 func (mem *cache) appendReplacementCandidates(candidates []prioritize.CandidateWithTime, transport types.ImageTransport, scope types.BICTransportScope, digest digest.Digest, requireCompressionInfo bool) []prioritize.CandidateWithTime {
 	locations := mem.knownLocations[locationKey{transport: transport.Name(), scope: scope, blobDigest: digest}] // nil if not present

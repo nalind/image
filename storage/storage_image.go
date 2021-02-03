@@ -17,6 +17,7 @@ import (
 
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/image"
+	"github.com/containers/image/v5/internal/blobinfocache"
 	"github.com/containers/image/v5/internal/tmpdir"
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/pkg/blobinfocache/none"
@@ -452,6 +453,8 @@ func (s *storageImageDestination) PutBlob(ctx context.Context, stream io.Reader,
 	}
 	// This is safe because we have just computed both values ourselves.
 	cache.RecordDigestUncompressedPair(blobDigest, diffID.Digest())
+	bic := blobinfocache.FromBlobInfoCache(cache)
+	bic.RecordDigestCompressorName(diffID.Digest(), blobinfocache.Uncompressed)
 	return types.BlobInfo{
 		Digest:    blobDigest,
 		Size:      blobSize,

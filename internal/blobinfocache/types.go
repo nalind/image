@@ -25,6 +25,9 @@ type BlobInfoCache2 interface {
 	// otherwise the cache could be poisoned and cause us to make incorrect edits to type
 	// information in a manifest.
 	RecordDigestCompressorName(anyDigest digest.Digest, compressorName string)
+	// DigestCompressorName returns the type of compression that we know is applied to the
+	// blob with the specified digest, or Uncompressed or UnknownCompression.
+	DigestCompressorName(anyDigest digest.Digest) string
 	// CandidateLocations2 returns a prioritized, limited, number of blobs and their locations
 	// that could possibly be reused within the specified (transport scope) (if they still
 	// exist, which is not guaranteed).

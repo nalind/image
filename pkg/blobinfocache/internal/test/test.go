@@ -218,6 +218,9 @@ func testGenericCandidateLocations2(t *testing.T, cache blobinfocache.BlobInfoCa
 			for _, e := range digestNameSet {
 				cache.RecordDigestCompressorName(e.d, blobinfocache.UnknownCompression)
 			}
+			for _, e := range digestNameSet {
+				assert.Equal(t, blobinfocache.UnknownCompression, cache.DigestCompressorName(e.d))
+			}
 		}
 
 		// No substitutions allowed:
@@ -274,6 +277,11 @@ func testGenericCandidateLocations2(t *testing.T, cache blobinfocache.BlobInfoCa
 		// Set the "known" compression values
 		for _, e := range digestNameSet {
 			cache.RecordDigestCompressorName(e.d, e.m)
+		}
+
+		// Check that we can retrieve compression values
+		for _, e := range digestNameSet {
+			assert.Equal(t, e.m, cache.DigestCompressorName(e.d))
 		}
 
 		// No substitutions allowed:
