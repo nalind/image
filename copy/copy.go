@@ -1353,7 +1353,11 @@ func (c *copier) copyBlobFromStream(ctx context.Context, srcStream io.Reader, sr
 		compressionOperation = types.PreserveOriginal
 		inputInfo = srcInfo
 		uploadCompressorName = srcCompressorName
-		uploadCompressionFormat = nil
+		if isCompressed {
+			uploadCompressionFormat = &compressionFormat
+		} else {
+			uploadCompressionFormat = nil
+		}
 	}
 
 	// === Encrypt the stream for valid mediatypes if ociEncryptConfig provided
