@@ -20,6 +20,7 @@ import (
 	"github.com/containers/image/v5/internal/uploadreader"
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/pkg/blobinfocache/none"
+	"github.com/containers/image/v5/pkg/compression"
 	"github.com/containers/image/v5/types"
 	"github.com/docker/distribution/registry/api/errcode"
 	v2 "github.com/docker/distribution/registry/api/v2"
@@ -212,26 +213,46 @@ func (d *dockerImageDestination) PutBlob(ctx context.Context, stream io.Reader, 
 // blobExists returns true iff repo contains a blob with digest, and if so, also its size.
 // If the destination does not contain the blob, or it is unknown, blobExists ordinarily returns (false, -1, nil);
 // it returns a non-nil error only on an unexpected failure.
-func (d *dockerImageDestination) blobExists(ctx context.Context, repo reference.Named, digest digest.Digest, extraScope *authScope) (bool, int64, error) {
+func (d *dockerImageDestination) blobExists(ctx context.Context, repo reference.Named, digest digest.Digest, extraScope *authScope, detectCompression bool) (bool, int64, *compression.Algorithm, error) {
 	checkPath := fmt.Sprintf(blobsPath, reference.Path(repo), digest.String())
 	logrus.Debugf("Checking %s", checkPath)
-	res, err := d.c.makeRequest(ctx, "HEAD", checkPath, nil, nil, v2Auth, extraScope)
+	var headers http.Header
+	requestMethod := "HEAD"
+	if detectCompression {
+		requestMethod = "GET"
+		headers = http.Header{"Range": []string{"0-15"}} // a range that would include any recognized compression magic
+	}
+	res, err := d.c.makeRequest(ctx, requestMethod, checkPath, headers, nil, v2Auth, extraScope)
 	if err != nil {
-		return false, -1, err
+		return false, -1, nil, err
 	}
 	defer res.Body.Close()
+	var algorithm *compression.Algorithm
+	if detectCompression {
+		algo, _, bodyReader, err := compression.DetectCompressionFormat(res.Body)
+		if err != nil {
+			return false, -1, nil, err
+		}
+		if algo.Name() == "" {
+			algorithm = nil
+		}
+		_, err = io.Copy(ioutil.Discard, bodyReader)
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, -1, nil, err
+		}
+	}
 	switch res.StatusCode {
-	case http.StatusOK:
+	case http.StatusOK, http.StatusPartialContent:
 		logrus.Debugf("... already exists")
-		return true, getBlobSize(res), nil
+		return true, getBlobSize(res), algorithm, nil
 	case http.StatusUnauthorized:
 		logrus.Debugf("... not authorized")
-		return false, -1, errors.Wrapf(registryHTTPResponseToError(res), "Error checking whether a blob %s exists in %s", digest, repo.Name())
-	case http.StatusNotFound:
+		return false, -1, nil, errors.Wrapf(registryHTTPResponseToError(res), "Error checking whether a blob %s exists in %s", digest, repo.Name())
+	case http.StatusNotFound, http.StatusRequestedRangeNotSatisfiable:
 		logrus.Debugf("... not present")
-		return false, -1, nil
+		return false, -1, nil, nil
 	default:
-		return false, -1, errors.Errorf("failed to read from destination repository %s: %d (%s)", reference.Path(d.ref.ref), res.StatusCode, http.StatusText(res.StatusCode))
+		return false, -1, nil, errors.Errorf("failed to read from destination repository %s: %d (%s)", reference.Path(d.ref.ref), res.StatusCode, http.StatusText(res.StatusCode))
 	}
 }
 
@@ -296,13 +317,13 @@ func (d *dockerImageDestination) TryReusingBlob(ctx context.Context, info types.
 	}
 
 	// First, check whether the blob happens to already exist at the destination.
-	exists, size, err := d.blobExists(ctx, d.ref.ref, info.Digest, nil)
+	exists, size, compressionAlgorithm, err := d.blobExists(ctx, d.ref.ref, info.Digest, nil, true)
 	if err != nil {
 		return false, types.BlobInfo{}, err
 	}
 	if exists {
 		cache.RecordKnownLocation(d.ref.Transport(), bicTransportScope(d.ref), info.Digest, newBICLocationReference(d.ref))
-		return true, types.BlobInfo{Digest: info.Digest, MediaType: info.MediaType, Size: size}, nil
+		return true, types.BlobInfo{Digest: info.Digest, MediaType: info.MediaType, Size: size, CompressionAlgorithm: compressionAlgorithm}, nil
 	}
 
 	// Then try reusing blobs from other locations.
@@ -345,7 +366,7 @@ func (d *dockerImageDestination) TryReusingBlob(ctx context.Context, info types.
 		// Even worse, docker/distribution does not actually reasonably implement canceling uploads
 		// (it would require a "delete" action in the token, and Quay does not give that to anyone, so we can't ask);
 		// so, be a nice client and don't create unnecessary upload sessions on the server.
-		exists, size, err := d.blobExists(ctx, candidateRepo, candidate.Digest, extraScope)
+		exists, size, _, err := d.blobExists(ctx, candidateRepo, candidate.Digest, extraScope, false)
 		if err != nil {
 			logrus.Debugf("... Failed: %v", err)
 			continue
