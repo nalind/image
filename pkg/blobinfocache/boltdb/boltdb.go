@@ -332,6 +332,42 @@ func (bdc *cache) candidateLocations(transport types.ImageTransport, scope types
 	res := []prioritize.CandidateWithTime{}
 	var uncompressedDigestValue digest.Digest // = ""
 	if err := bdc.view(func(tx *bolt.Tx) error {
+		if canSubstitute {
+			if uncompressedDigestValue = bdc.uncompressedDigest(tx, primaryDigest); uncompressedDigestValue != "" {
+				if b := tx.Bucket(digestByUncompressedBucket); b != nil {
+					b = b.Bucket([]byte(uncompressedDigestValue.String()))
+					if b != nil {
+						compressionBucket := tx.Bucket(digestCompressorBucket)
+						if err := b.ForEach(func(k, _ []byte) error {
+							var compressorName string
+							d, err := digest.Parse(string(k))
+							if err != nil {
+								return err
+							}
+							digestKey := []byte(d.String())
+							if compressionBucket != nil {
+								if compressorNameValue := compressionBucket.Get(digestKey); len(compressorNameValue) > 0 {
+									compressorName = string(compressorNameValue)
+								}
+							}
+							if compressorName != blobinfocache.UnknownCompression || !requireCompressionInfo {
+								res = append(res, prioritize.CandidateWithTime{
+									Candidate: blobinfocache.BICReplacementCandidate2{
+										Digest:         d,
+										CompressorName: compressorName,
+										Location:       types.BICLocationReference{Opaque: ""},
+									},
+									LastSeen: time.Time{},
+								})
+							}
+							return nil
+						}); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
 		scopeBucket := tx.Bucket(knownLocationsBucket)
 		if scopeBucket == nil {
 			return nil
