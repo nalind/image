@@ -25,18 +25,21 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type dockerImageSource struct {
+// ImageSource is a Docker-specific implementation of types.ImageSource with a
+// few extra methods which are specific to Docker.
+type ImageSource struct {
 	logicalRef  dockerReference // The reference the user requested.
 	physicalRef dockerReference // The actual reference we are accessing (possibly a mirror)
 	c           *dockerClient
 	// State
 	cachedManifest         []byte // nil if not loaded yet
+	cachedHeaders          http.Header
 	cachedManifestMIMEType string // Only valid if cachedManifest != nil
 }
 
 // newImageSource creates a new ImageSource for the specified image reference.
 // The caller must call .Close() on the returned ImageSource.
-func newImageSource(ctx context.Context, sys *types.SystemContext, ref dockerReference) (*dockerImageSource, error) {
+func newImageSource(ctx context.Context, sys *types.SystemContext, ref dockerReference) (*ImageSource, error) {
 	registry, err := sysregistriesv2.FindRegistry(sys, ref.ref.Name())
 	if err != nil {
 		return nil, errors.Wrapf(err, "loading registries configuration")
@@ -101,9 +104,9 @@ func newImageSource(ctx context.Context, sys *types.SystemContext, ref dockerRef
 }
 
 // newImageSourceAttempt is an internal helper for newImageSource. Everyone else must call newImageSource.
-// Given a logicalReference and a pullSource, return a dockerImageSource if it is reachable.
+// Given a logicalReference and a pullSource, return a ImageSource if it is reachable.
 // The caller must call .Close() on the returned ImageSource.
-func newImageSourceAttempt(ctx context.Context, sys *types.SystemContext, logicalRef dockerReference, pullSource sysregistriesv2.PullSource) (*dockerImageSource, error) {
+func newImageSourceAttempt(ctx context.Context, sys *types.SystemContext, logicalRef dockerReference, pullSource sysregistriesv2.PullSource) (*ImageSource, error) {
 	physicalRef, err := newReference(pullSource.Reference)
 	if err != nil {
 		return nil, err
@@ -124,7 +127,7 @@ func newImageSourceAttempt(ctx context.Context, sys *types.SystemContext, logica
 	}
 	client.tlsClientConfig.InsecureSkipVerify = pullSource.Endpoint.Insecure
 
-	s := &dockerImageSource{
+	s := &ImageSource{
 		logicalRef:  logicalRef,
 		physicalRef: physicalRef,
 		c:           client,
@@ -138,12 +141,12 @@ func newImageSourceAttempt(ctx context.Context, sys *types.SystemContext, logica
 
 // Reference returns the reference used to set up this source, _as specified by the user_
 // (not as the image itself, or its underlying storage, claims).  This can be used e.g. to determine which public keys are trusted for this image.
-func (s *dockerImageSource) Reference() types.ImageReference {
+func (s *ImageSource) Reference() types.ImageReference {
 	return s.logicalRef
 }
 
 // Close removes resources associated with an initialized ImageSource, if any.
-func (s *dockerImageSource) Close() error {
+func (s *ImageSource) Close() error {
 	return nil
 }
 
@@ -155,7 +158,7 @@ func (s *dockerImageSource) Close() error {
 // (e.g. if the source never returns manifest lists).
 // The Digest field is guaranteed to be provided; Size may be -1.
 // WARNING: The list may contain duplicates, and they are semantically relevant.
-func (s *dockerImageSource) LayerInfosForCopy(context.Context, *digest.Digest) ([]types.BlobInfo, error) {
+func (s *ImageSource) LayerInfosForCopy(context.Context, *digest.Digest) ([]types.BlobInfo, error) {
 	return nil, nil
 }
 
@@ -172,51 +175,61 @@ func simplifyContentType(contentType string) string {
 	return mimeType
 }
 
-// GetManifest returns the image's manifest along with its MIME type (which may be empty when it can't be determined but the manifest is available).
+// GetManifestWithHeaders returns the image's manifest along with its MIME type (which may be empty when it can't be determined but the manifest is available), along with any headers which were received from the registry.
 // It may use a remote (= slow) service.
 // If instanceDigest is not nil, it contains a digest of the specific manifest instance to retrieve (when the primary manifest is a manifest list);
 // this never happens if the primary manifest is not a manifest list (e.g. if the source never returns manifest lists).
-func (s *dockerImageSource) GetManifest(ctx context.Context, instanceDigest *digest.Digest) ([]byte, string, error) {
+func (s *ImageSource) GetManifestWithHeaders(ctx context.Context, instanceDigest *digest.Digest) ([]byte, string, http.Header, error) {
 	if instanceDigest != nil {
 		return s.fetchManifest(ctx, instanceDigest.String())
 	}
 	err := s.ensureManifestIsLoaded(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	return s.cachedManifest, s.cachedManifestMIMEType, nil
+	return s.cachedManifest, s.cachedManifestMIMEType, s.cachedHeaders, nil
 }
 
-func (s *dockerImageSource) fetchManifest(ctx context.Context, tagOrDigest string) ([]byte, string, error) {
+// GetManifest returns the image's manifest along with its MIME type (which may be empty when it can't be determined but the manifest is available).
+// It may use a remote (= slow) service.
+// If instanceDigest is not nil, it contains a digest of the specific manifest instance to retrieve (when the primary manifest is a manifest list);
+// this never happens if the primary manifest is not a manifest list (e.g. if the source never returns manifest lists).
+func (s *ImageSource) GetManifest(ctx context.Context, instanceDigest *digest.Digest) ([]byte, string, error) {
+	b, t, _, err := s.GetManifestWithHeaders(ctx, instanceDigest)
+	return b, t, err
+}
+
+func (s *ImageSource) fetchManifest(ctx context.Context, tagOrDigest string) ([]byte, string, http.Header, error) {
 	path := fmt.Sprintf(manifestPath, reference.Path(s.physicalRef.ref), tagOrDigest)
 	headers := map[string][]string{
 		"Accept": manifest.DefaultRequestedManifestMIMETypes,
 	}
 	res, err := s.c.makeRequest(ctx, http.MethodGet, path, headers, nil, v2Auth, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	logrus.Debugf("Content-Type from manifest GET is %q", res.Header.Get("Content-Type"))
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, "", errors.Wrapf(registryHTTPResponseToError(res), "reading manifest %s in %s", tagOrDigest, s.physicalRef.ref.Name())
+		return nil, "", nil, errors.Wrapf(registryHTTPResponseToError(res), "reading manifest %s in %s", tagOrDigest, s.physicalRef.ref.Name())
 	}
 
 	manblob, err := iolimits.ReadAtMost(res.Body, iolimits.MaxManifestBodySize)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	return manblob, simplifyContentType(res.Header.Get("Content-Type")), nil
+	return manblob, simplifyContentType(res.Header.Get("Content-Type")), res.Header, nil
 }
 
-// ensureManifestIsLoaded sets s.cachedManifest and s.cachedManifestMIMEType
+// ensureManifestIsLoaded sets s.cachedManifest, s.cachedManifestMIMEType, and
+// s.cachedHeaders
 //
 // ImageSource implementations are not required or expected to do any caching,
 // but because our signatures are “attached” to the manifest digest,
 // we need to ensure that the digest of the manifest returned by GetManifest(ctx, nil)
 // and used by GetSignatures(ctx, nil) are consistent, otherwise we would get spurious
 // signature verification failures when pulling while a tag is being updated.
-func (s *dockerImageSource) ensureManifestIsLoaded(ctx context.Context) error {
+func (s *ImageSource) ensureManifestIsLoaded(ctx context.Context) error {
 	if s.cachedManifest != nil {
 		return nil
 	}
@@ -226,20 +239,24 @@ func (s *dockerImageSource) ensureManifestIsLoaded(ctx context.Context) error {
 		return err
 	}
 
-	manblob, mt, err := s.fetchManifest(ctx, reference)
+	manblob, mt, headers, err := s.fetchManifest(ctx, reference)
 	if err != nil {
 		return err
 	}
 	// We might validate manblob against the Docker-Content-Digest header here to protect against transport errors.
 	s.cachedManifest = manblob
 	s.cachedManifestMIMEType = mt
+	s.cachedHeaders = make(map[string][]string)
+	for k, v := range headers {
+		s.cachedHeaders[k] = append([]string{}, v...)
+	}
 	return nil
 }
 
 // getExternalBlob returns the reader of the first available blob URL from urls, which must not be empty.
 // This function can return nil reader when no url is supported by this function. In this case, the caller
 // should fallback to fetch the non-external blob (i.e. pull from the registry).
-func (s *dockerImageSource) getExternalBlob(ctx context.Context, urls []string) (io.ReadCloser, int64, error) {
+func (s *ImageSource) getExternalBlob(ctx context.Context, urls []string) (io.ReadCloser, int64, error) {
 	var (
 		resp *http.Response
 		err  error
@@ -283,7 +300,7 @@ func getBlobSize(resp *http.Response) int64 {
 }
 
 // HasThreadSafeGetBlob indicates whether GetBlob can be executed concurrently.
-func (s *dockerImageSource) HasThreadSafeGetBlob() bool {
+func (s *ImageSource) HasThreadSafeGetBlob() bool {
 	return true
 }
 
@@ -359,7 +376,7 @@ func handle206Response(streams chan io.ReadCloser, errs chan error, body io.Read
 
 // GetBlobAt returns a stream for the specified blob.
 // The specified chunks must be not overlapping and sorted by their offset.
-func (s *dockerImageSource) GetBlobAt(ctx context.Context, info types.BlobInfo, chunks []internalTypes.ImageSourceChunk) (chan io.ReadCloser, chan error, error) {
+func (s *ImageSource) GetBlobAt(ctx context.Context, info types.BlobInfo, chunks []internalTypes.ImageSourceChunk) (chan io.ReadCloser, chan error, error) {
 	headers := make(map[string][]string)
 
 	var rangeVals []string
@@ -415,7 +432,7 @@ func (s *dockerImageSource) GetBlobAt(ctx context.Context, info types.BlobInfo, 
 // GetBlob returns a stream for the specified blob, and the blob’s size (or -1 if unknown).
 // The Digest field in BlobInfo is guaranteed to be provided, Size may be -1 and MediaType may be optionally provided.
 // May update BlobInfoCache, preferably after it knows for certain that a blob truly exists at a specific location.
-func (s *dockerImageSource) GetBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache) (io.ReadCloser, int64, error) {
+func (s *ImageSource) GetBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache) (io.ReadCloser, int64, error) {
 	if len(info.URLs) != 0 {
 		r, s, err := s.getExternalBlob(ctx, info.URLs)
 		if err != nil {
@@ -443,7 +460,7 @@ func (s *dockerImageSource) GetBlob(ctx context.Context, info types.BlobInfo, ca
 // If instanceDigest is not nil, it contains a digest of the specific manifest instance to retrieve signatures for
 // (when the primary manifest is a manifest list); this never happens if the primary manifest is not a manifest list
 // (e.g. if the source never returns manifest lists).
-func (s *dockerImageSource) GetSignatures(ctx context.Context, instanceDigest *digest.Digest) ([][]byte, error) {
+func (s *ImageSource) GetSignatures(ctx context.Context, instanceDigest *digest.Digest) ([][]byte, error) {
 	if err := s.c.detectProperties(ctx); err != nil {
 		return nil, err
 	}
@@ -459,7 +476,7 @@ func (s *dockerImageSource) GetSignatures(ctx context.Context, instanceDigest *d
 
 // manifestDigest returns a digest of the manifest, from instanceDigest if non-nil; or from the supplied reference,
 // or finally, from a fetched manifest.
-func (s *dockerImageSource) manifestDigest(ctx context.Context, instanceDigest *digest.Digest) (digest.Digest, error) {
+func (s *ImageSource) manifestDigest(ctx context.Context, instanceDigest *digest.Digest) (digest.Digest, error) {
 	if instanceDigest != nil {
 		return *instanceDigest, nil
 	}
@@ -477,7 +494,7 @@ func (s *dockerImageSource) manifestDigest(ctx context.Context, instanceDigest *
 
 // getSignaturesFromLookaside implements GetSignatures() from the lookaside location configured in s.c.signatureBase,
 // which is not nil.
-func (s *dockerImageSource) getSignaturesFromLookaside(ctx context.Context, instanceDigest *digest.Digest) ([][]byte, error) {
+func (s *ImageSource) getSignaturesFromLookaside(ctx context.Context, instanceDigest *digest.Digest) ([][]byte, error) {
 	manifestDigest, err := s.manifestDigest(ctx, instanceDigest)
 	if err != nil {
 		return nil, err
@@ -502,7 +519,7 @@ func (s *dockerImageSource) getSignaturesFromLookaside(ctx context.Context, inst
 // getOneSignature downloads one signature from url.
 // If it successfully determines that the signature does not exist, returns with missing set to true and error set to nil.
 // NOTE: Keep this in sync with docs/signature-protocols.md!
-func (s *dockerImageSource) getOneSignature(ctx context.Context, url *url.URL) (signature []byte, missing bool, err error) {
+func (s *ImageSource) getOneSignature(ctx context.Context, url *url.URL) (signature []byte, missing bool, err error) {
 	switch url.Scheme {
 	case "file":
 		logrus.Debugf("Reading %s", url.Path)
@@ -543,7 +560,7 @@ func (s *dockerImageSource) getOneSignature(ctx context.Context, url *url.URL) (
 }
 
 // getSignaturesFromAPIExtension implements GetSignatures() using the X-Registry-Supports-Signatures API extension.
-func (s *dockerImageSource) getSignaturesFromAPIExtension(ctx context.Context, instanceDigest *digest.Digest) ([][]byte, error) {
+func (s *ImageSource) getSignaturesFromAPIExtension(ctx context.Context, instanceDigest *digest.Digest) ([][]byte, error) {
 	manifestDigest, err := s.manifestDigest(ctx, instanceDigest)
 	if err != nil {
 		return nil, err

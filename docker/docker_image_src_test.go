@@ -75,7 +75,7 @@ location = "@REGISTRY@/with-mirror"
 		assert.Equal(t, "//"+c.input, src.Reference().StringWithinTransport(), c.input)
 		assert.Equal(t, ref.StringWithinTransport(), src.Reference().StringWithinTransport(), c.input)
 		// Also peek into internal state
-		src2, ok := src.(*dockerImageSource)
+		src2, ok := src.(*ImageSource)
 		require.True(t, ok, c.input)
 		assert.Equal(t, "//"+c.input, src2.logicalRef.StringWithinTransport(), c.input)
 		assert.Equal(t, "//"+c.physical, src2.physicalRef.StringWithinTransport(), c.input)

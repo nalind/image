@@ -29,7 +29,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type dockerImageDestination struct {
+// ImageDestination is a Docker-specific implementation of
+// types.ImageDestination with a few extra methods which are specific to
+// Docker.
+type ImageDestination struct {
 	ref dockerReference
 	c   *dockerClient
 	// State
@@ -42,7 +45,7 @@ func newImageDestination(sys *types.SystemContext, ref dockerReference) (types.I
 	if err != nil {
 		return nil, err
 	}
-	return &dockerImageDestination{
+	return &ImageDestination{
 		ref: ref,
 		c:   c,
 	}, nil
@@ -50,16 +53,16 @@ func newImageDestination(sys *types.SystemContext, ref dockerReference) (types.I
 
 // Reference returns the reference used to set up this destination.  Note that this should directly correspond to user's intent,
 // e.g. it should use the public hostname instead of the result of resolving CNAMEs or following redirects.
-func (d *dockerImageDestination) Reference() types.ImageReference {
+func (d *ImageDestination) Reference() types.ImageReference {
 	return d.ref
 }
 
 // Close removes resources associated with an initialized ImageDestination, if any.
-func (d *dockerImageDestination) Close() error {
+func (d *ImageDestination) Close() error {
 	return nil
 }
 
-func (d *dockerImageDestination) SupportedManifestMIMETypes() []string {
+func (d *ImageDestination) SupportedManifestMIMETypes() []string {
 	mimeTypes := []string{
 		imgspecv1.MediaTypeImageManifest,
 		manifest.DockerV2Schema2MediaType,
@@ -74,7 +77,7 @@ func (d *dockerImageDestination) SupportedManifestMIMETypes() []string {
 
 // SupportsSignatures returns an error (to be displayed to the user) if the destination certainly can't store signatures.
 // Note: It is still possible for PutSignatures to fail if SupportsSignatures returns nil.
-func (d *dockerImageDestination) SupportsSignatures(ctx context.Context) error {
+func (d *ImageDestination) SupportsSignatures(ctx context.Context) error {
 	if err := d.c.detectProperties(ctx); err != nil {
 		return err
 	}
@@ -88,25 +91,25 @@ func (d *dockerImageDestination) SupportsSignatures(ctx context.Context) error {
 	}
 }
 
-func (d *dockerImageDestination) DesiredLayerCompression() types.LayerCompression {
+func (d *ImageDestination) DesiredLayerCompression() types.LayerCompression {
 	return types.Compress
 }
 
 // AcceptsForeignLayerURLs returns false iff foreign layers in manifest should be actually
 // uploaded to the image destination, true otherwise.
-func (d *dockerImageDestination) AcceptsForeignLayerURLs() bool {
+func (d *ImageDestination) AcceptsForeignLayerURLs() bool {
 	return true
 }
 
 // MustMatchRuntimeOS returns true iff the destination can store only images targeted for the current runtime architecture and OS. False otherwise.
-func (d *dockerImageDestination) MustMatchRuntimeOS() bool {
+func (d *ImageDestination) MustMatchRuntimeOS() bool {
 	return false
 }
 
 // IgnoresEmbeddedDockerReference returns true iff the destination does not care about Image.EmbeddedDockerReferenceConflicts(),
 // and would prefer to receive an unmodified manifest instead of one modified for the destination.
 // Does not make a difference if Reference().DockerReference() is nil.
-func (d *dockerImageDestination) IgnoresEmbeddedDockerReference() bool {
+func (d *ImageDestination) IgnoresEmbeddedDockerReference() bool {
 	return false // We do want the manifest updated; older registry versions refuse manifests if the embedded reference does not match.
 }
 
@@ -119,7 +122,7 @@ func (c *sizeCounter) Write(p []byte) (n int, err error) {
 }
 
 // HasThreadSafePutBlob indicates whether PutBlob can be executed concurrently.
-func (d *dockerImageDestination) HasThreadSafePutBlob() bool {
+func (d *ImageDestination) HasThreadSafePutBlob() bool {
 	return true
 }
 
@@ -130,7 +133,7 @@ func (d *dockerImageDestination) HasThreadSafePutBlob() bool {
 // WARNING: The contents of stream are being verified on the fly.  Until stream.Read() returns io.EOF, the contents of the data SHOULD NOT be available
 // to any other readers for download using the supplied digest.
 // If stream.Read() at any time, ESPECIALLY at end of input, returns an error, PutBlob MUST 1) fail, and 2) delete any data stored so far.
-func (d *dockerImageDestination) PutBlob(ctx context.Context, stream io.Reader, inputInfo types.BlobInfo, cache types.BlobInfoCache, isConfig bool) (types.BlobInfo, error) {
+func (d *ImageDestination) PutBlob(ctx context.Context, stream io.Reader, inputInfo types.BlobInfo, cache types.BlobInfoCache, isConfig bool) (types.BlobInfo, error) {
 	// If requested, precompute the blob digest to prevent uploading layers that already exist on the registry.
 	// This functionality is particularly useful when BlobInfoCache has not been populated with compressed digests,
 	// the source blob is uncompressed, and the destination blob is being compressed "on the fly".
@@ -225,7 +228,7 @@ func (d *dockerImageDestination) PutBlob(ctx context.Context, stream io.Reader, 
 // blobExists returns true iff repo contains a blob with digest, and if so, also its size.
 // If the destination does not contain the blob, or it is unknown, blobExists ordinarily returns (false, -1, nil);
 // it returns a non-nil error only on an unexpected failure.
-func (d *dockerImageDestination) blobExists(ctx context.Context, repo reference.Named, digest digest.Digest, extraScope *authScope) (bool, int64, error) {
+func (d *ImageDestination) blobExists(ctx context.Context, repo reference.Named, digest digest.Digest, extraScope *authScope) (bool, int64, error) {
 	checkPath := fmt.Sprintf(blobsPath, reference.Path(repo), digest.String())
 	logrus.Debugf("Checking %s", checkPath)
 	res, err := d.c.makeRequest(ctx, http.MethodHead, checkPath, nil, nil, v2Auth, extraScope)
@@ -249,7 +252,7 @@ func (d *dockerImageDestination) blobExists(ctx context.Context, repo reference.
 }
 
 // mountBlob tries to mount blob srcDigest from srcRepo to the current destination.
-func (d *dockerImageDestination) mountBlob(ctx context.Context, srcRepo reference.Named, srcDigest digest.Digest, extraScope *authScope) error {
+func (d *ImageDestination) mountBlob(ctx context.Context, srcRepo reference.Named, srcDigest digest.Digest, extraScope *authScope) error {
 	u := url.URL{
 		Path: fmt.Sprintf(blobUploadPath, reference.Path(d.ref.ref)),
 		RawQuery: url.Values{
@@ -297,7 +300,7 @@ func (d *dockerImageDestination) mountBlob(ctx context.Context, srcRepo referenc
 // tryReusingExactBlob is a subset of TryReusingBlob which _only_ looks for exactly the specified
 // blob in the current repository, with no cross-repo reuse or mounting; cache may be updated, it is not read.
 // The caller must ensure info.Digest is set.
-func (d *dockerImageDestination) tryReusingExactBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache) (bool, types.BlobInfo, error) {
+func (d *ImageDestination) tryReusingExactBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache) (bool, types.BlobInfo, error) {
 	exists, size, err := d.blobExists(ctx, d.ref.ref, info.Digest, nil)
 	if err != nil {
 		return false, types.BlobInfo{}, err
@@ -318,7 +321,7 @@ func (d *dockerImageDestination) tryReusingExactBlob(ctx context.Context, info t
 // reflected in the manifest that will be written.
 // If the transport can not reuse the requested blob, TryReusingBlob returns (false, {}, nil); it returns a non-nil error only on an unexpected failure.
 // May use and/or update cache.
-func (d *dockerImageDestination) TryReusingBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache, canSubstitute bool) (bool, types.BlobInfo, error) {
+func (d *ImageDestination) TryReusingBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache, canSubstitute bool) (bool, types.BlobInfo, error) {
 	if info.Digest == "" {
 		return false, types.BlobInfo{}, errors.Errorf(`"Can not check for a blob with unknown digest`)
 	}
@@ -402,14 +405,14 @@ func (d *dockerImageDestination) TryReusingBlob(ctx context.Context, info types.
 	return false, types.BlobInfo{}, nil
 }
 
-// PutManifest writes manifest to the destination.
+// PutManifestWithHeaders writes manifest to the destination.
 // When the primary manifest is a manifest list, if instanceDigest is nil, we're saving the list
 // itself, else instanceDigest contains a digest of the specific manifest instance to overwrite the
 // manifest for; when the primary manifest is not a manifest list, instanceDigest should always be nil.
 // FIXME? This should also receive a MIME type if known, to differentiate between schema versions.
 // If the destination is in principle available, refuses this manifest type (e.g. it does not recognize the schema),
 // but may accept a different manifest type, the returned error must be an ManifestTypeRejectedError.
-func (d *dockerImageDestination) PutManifest(ctx context.Context, m []byte, instanceDigest *digest.Digest) error {
+func (d *ImageDestination) PutManifestWithHeaders(ctx context.Context, m []byte, instanceDigest *digest.Digest, headers http.Header) error {
 	refTail := ""
 	if instanceDigest != nil {
 		// If the instanceDigest is provided, then use it as the refTail, because the reference,
@@ -446,7 +449,9 @@ func (d *dockerImageDestination) PutManifest(ctx context.Context, m []byte, inst
 
 	path := fmt.Sprintf(manifestPath, reference.Path(d.ref.ref), refTail)
 
-	headers := map[string][]string{}
+	if len(headers) == 0 {
+		headers = map[string][]string{}
+	}
 	mimeType := manifest.GuessMIMEType(m)
 	if mimeType != "" {
 		headers["Content-Type"] = []string{mimeType}
@@ -477,6 +482,17 @@ func (d *dockerImageDestination) PutManifest(ctx context.Context, m []byte, inst
 		logrus.Debugf("Manifest upload response didn’t contain a Docker-Content-Digest header, it might not be a container registry")
 	}
 	return nil
+}
+
+// PutManifest writes manifest to the destination.
+// When the primary manifest is a manifest list, if instanceDigest is nil, we're saving the list
+// itself, else instanceDigest contains a digest of the specific manifest instance to overwrite the
+// manifest for; when the primary manifest is not a manifest list, instanceDigest should always be nil.
+// FIXME? This should also receive a MIME type if known, to differentiate between schema versions.
+// If the destination is in principle available, refuses this manifest type (e.g. it does not recognize the schema),
+// but may accept a different manifest type, the returned error must be an ManifestTypeRejectedError.
+func (d *ImageDestination) PutManifest(ctx context.Context, m []byte, instanceDigest *digest.Digest) error {
+	return d.PutManifestWithHeaders(ctx, m, instanceDigest, nil)
 }
 
 // successStatus returns true if the argument is a successful HTTP response
@@ -519,7 +535,7 @@ func isManifestInvalidError(err error) bool {
 // PutSignatures uploads a set of signatures to the relevant lookaside or API extension point.
 // If instanceDigest is not nil, it contains a digest of the specific manifest instance to upload the signatures for (when
 // the primary manifest is a manifest list); this should always be nil if the primary manifest is not a manifest list.
-func (d *dockerImageDestination) PutSignatures(ctx context.Context, signatures [][]byte, instanceDigest *digest.Digest) error {
+func (d *ImageDestination) PutSignatures(ctx context.Context, signatures [][]byte, instanceDigest *digest.Digest) error {
 	// Do not fail if we don’t really need to support signatures.
 	if len(signatures) == 0 {
 		return nil
@@ -547,7 +563,7 @@ func (d *dockerImageDestination) PutSignatures(ctx context.Context, signatures [
 
 // putSignaturesToLookaside implements PutSignatures() from the lookaside location configured in s.c.signatureBase,
 // which is not nil, for a manifest with manifestDigest.
-func (d *dockerImageDestination) putSignaturesToLookaside(signatures [][]byte, manifestDigest digest.Digest) error {
+func (d *ImageDestination) putSignaturesToLookaside(signatures [][]byte, manifestDigest digest.Digest) error {
 	// FIXME? This overwrites files one at a time, definitely not atomic.
 	// A failure when updating signatures with a reordered copy could lose some of them.
 
@@ -585,7 +601,7 @@ func (d *dockerImageDestination) putSignaturesToLookaside(signatures [][]byte, m
 
 // putOneSignature stores one signature to url.
 // NOTE: Keep this in sync with docs/signature-protocols.md!
-func (d *dockerImageDestination) putOneSignature(url *url.URL, signature []byte) error {
+func (d *ImageDestination) putOneSignature(url *url.URL, signature []byte) error {
 	switch url.Scheme {
 	case "file":
 		logrus.Debugf("Writing to %s", url.Path)
@@ -628,7 +644,7 @@ func (c *dockerClient) deleteOneSignature(url *url.URL) (missing bool, err error
 
 // putSignaturesToAPIExtension implements PutSignatures() using the X-Registry-Supports-Signatures API extension,
 // for a manifest with manifestDigest.
-func (d *dockerImageDestination) putSignaturesToAPIExtension(ctx context.Context, signatures [][]byte, manifestDigest digest.Digest) error {
+func (d *ImageDestination) putSignaturesToAPIExtension(ctx context.Context, signatures [][]byte, manifestDigest digest.Digest) error {
 	// Skip dealing with the manifest digest, or reading the old state, if not necessary.
 	if len(signatures) == 0 {
 		return nil
@@ -701,6 +717,6 @@ sigExists:
 // WARNING: This does not have any transactional semantics:
 // - Uploaded data MAY be visible to others before Commit() is called
 // - Uploaded data MAY be removed or MAY remain around if Close() is called without Commit() (i.e. rollback is allowed but not guaranteed)
-func (d *dockerImageDestination) Commit(context.Context, types.UnparsedImage) error {
+func (d *ImageDestination) Commit(context.Context, types.UnparsedImage) error {
 	return nil
 }

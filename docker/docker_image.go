@@ -20,7 +20,7 @@ import (
 // which are specific to Docker.
 type Image struct {
 	types.ImageCloser
-	src *dockerImageSource
+	src *ImageSource
 }
 
 // newImage returns a new Image interface type after setting up
