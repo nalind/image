@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,72 +93,61 @@ func TestDockerCertDir(t *testing.T) {
 	}
 }
 
-func TestNewBearerTokenFromJsonBlob(t *testing.T) {
-	expected := &bearerToken{Token: "IAmAToken", ExpiresIn: 100, IssuedAt: time.Unix(1514800802, 0)}
-	tokenBlob := []byte(`{"token":"IAmAToken","expires_in":100,"issued_at":"2018-01-01T10:00:02+00:00"}`)
-	token, err := newBearerTokenFromJSONBlob(tokenBlob)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	assertBearerTokensEqual(t, expected, token)
-}
-
-func TestNewBearerAccessTokenFromJsonBlob(t *testing.T) {
-	expected := &bearerToken{Token: "IAmAToken", ExpiresIn: 100, IssuedAt: time.Unix(1514800802, 0)}
-	tokenBlob := []byte(`{"access_token":"IAmAToken","expires_in":100,"issued_at":"2018-01-01T10:00:02+00:00"}`)
-	token, err := newBearerTokenFromJSONBlob(tokenBlob)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	assertBearerTokensEqual(t, expected, token)
-}
-
-func TestNewBearerTokenFromInvalidJsonBlob(t *testing.T) {
-	tokenBlob := []byte("IAmNotJson")
-	_, err := newBearerTokenFromJSONBlob(tokenBlob)
-	if err == nil {
-		t.Fatalf("unexpected an error unmarshaling JSON")
+// testTokenHTTPResponse creates just enough of a *http.Response to work with newBearerTokenFromHTTPResponseBody.
+func testTokenHTTPResponse(t *testing.T, body string) *http.Response {
+	requestURL, err := url.Parse("https://example.com/token")
+	require.NoError(t, err)
+	return &http.Response{
+		Body: io.NopCloser(bytes.NewReader([]byte(body))),
+		Request: &http.Request{
+			Method: "",
+			URL:    requestURL,
+		},
 	}
 }
 
-func TestNewBearerTokenSmallExpiryFromJsonBlob(t *testing.T) {
-	expected := &bearerToken{Token: "IAmAToken", ExpiresIn: 60, IssuedAt: time.Unix(1514800802, 0)}
-	tokenBlob := []byte(`{"token":"IAmAToken","expires_in":1,"issued_at":"2018-01-01T10:00:02+00:00"}`)
-	token, err := newBearerTokenFromJSONBlob(tokenBlob)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestNewBearerTokenFromHTTPResponseBody(t *testing.T) {
+	for _, c := range []struct {
+		input    string
+		expected *bearerToken // or nil if a failure is expected
+	}{
+		{ // Invalid JSON
+			input:    "IAmNotJson",
+			expected: nil,
+		},
+		{ // "token"
+			input:    `{"token":"IAmAToken","expires_in":100,"issued_at":"2018-01-01T10:00:02+00:00"}`,
+			expected: &bearerToken{Token: "IAmAToken", ExpiresIn: 100, IssuedAt: time.Unix(1514800802, 0)},
+		},
+		{ // "access_token"
+			input:    `{"access_token":"IAmAToken","expires_in":100,"issued_at":"2018-01-01T10:00:02+00:00"}`,
+			expected: &bearerToken{Token: "IAmAToken", ExpiresIn: 100, IssuedAt: time.Unix(1514800802, 0)},
+		},
+		{ // Small expiry
+			input:    `{"token":"IAmAToken","expires_in":1,"issued_at":"2018-01-01T10:00:02+00:00"}`,
+			expected: &bearerToken{Token: "IAmAToken", ExpiresIn: 60, IssuedAt: time.Unix(1514800802, 0)},
+		},
+	} {
+		token, err := newBearerTokenFromHTTPResponseBody(testTokenHTTPResponse(t, c.input))
+		if c.expected == nil {
+			assert.Error(t, err, c.input)
+		} else {
+			require.NoError(t, err, c.input)
+			assert.Equal(t, c.expected.Token, token.Token, c.input)
+			assert.Equal(t, c.expected.ExpiresIn, token.ExpiresIn, c.input)
+			assert.True(t, c.expected.IssuedAt.Equal(token.IssuedAt),
+				"expected [%s] to equal [%s], it did not", token.IssuedAt, c.expected.IssuedAt)
+		}
 	}
-
-	assertBearerTokensEqual(t, expected, token)
 }
 
-func TestNewBearerTokenIssuedAtZeroFromJsonBlob(t *testing.T) {
+func TestNewBearerTokenFromHTTPResponseBodyIssuedAtZero(t *testing.T) {
 	zeroTime := time.Time{}.Format(time.RFC3339)
 	now := time.Now()
-	tokenBlob := []byte(fmt.Sprintf(`{"token":"IAmAToken","expires_in":100,"issued_at":"%s"}`, zeroTime))
-	token, err := newBearerTokenFromJSONBlob(tokenBlob)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if token.IssuedAt.Before(now) {
-		t.Fatalf("expected [%s] not to be before [%s]", token.IssuedAt, now)
-	}
-
-}
-
-func assertBearerTokensEqual(t *testing.T, expected, subject *bearerToken) {
-	if expected.Token != subject.Token {
-		t.Fatalf("expected [%s] to equal [%s], it did not", subject.Token, expected.Token)
-	}
-	if expected.ExpiresIn != subject.ExpiresIn {
-		t.Fatalf("expected [%d] to equal [%d], it did not", subject.ExpiresIn, expected.ExpiresIn)
-	}
-	if !expected.IssuedAt.Equal(subject.IssuedAt) {
-		t.Fatalf("expected [%s] to equal [%s], it did not", subject.IssuedAt, expected.IssuedAt)
-	}
+	tokenBlob := fmt.Sprintf(`{"token":"IAmAToken","expires_in":100,"issued_at":"%s"}`, zeroTime)
+	token, err := newBearerTokenFromHTTPResponseBody(testTokenHTTPResponse(t, string(tokenBlob)))
+	require.NoError(t, err)
+	assert.False(t, token.IssuedAt.Before(now), "expected [%s] not to be before [%s]", token.IssuedAt, now)
 }
 
 func TestUserAgent(t *testing.T) {
@@ -392,6 +383,19 @@ func TestIsManifestUnknownError(t *testing.T) {
 				"\r\n" +
 				"Not found\r\n",
 		},
+		{
+			name: "Harbor v2.10.2",
+			response: "HTTP/1.1 404 Not Found\r\n" +
+				"Content-Length: 153\r\n" +
+				"Connection: keep-alive\r\n" +
+				"Content-Type: application/json; charset=utf-8\r\n" +
+				"Date: Wed, 08 May 2024 08:14:59 GMT\r\n" +
+				"Server: nginx\r\n" +
+				"Set-Cookie: sid=f617c257877837614ada2561513d6827; Path=/; HttpOnly\r\n" +
+				"X-Request-Id: 1b151fb1-c943-4190-a9ce-5156ed5e3200\r\n" +
+				"\r\n" +
+				"{\"errors\":[{\"code\":\"NOT_FOUND\",\"message\":\"artifact test/alpine:sha256-443205b0cfcc78444321d56a2fe273f06e27b2c72b5058f8d7e975997d45b015.sig not found\"}]}\n",
+		},
 	} {
 		resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader([]byte(c.response))), nil)
 		require.NoError(t, err, c.name)
@@ -399,6 +403,6 @@ func TestIsManifestUnknownError(t *testing.T) {
 		err = fmt.Errorf("wrapped: %w", registryHTTPResponseToError(resp))
 
 		res := isManifestUnknownError(err)
-		assert.True(t, res, "%#v", err, c.name)
+		assert.True(t, res, "%s: %#v", c.name, err)
 	}
 }
